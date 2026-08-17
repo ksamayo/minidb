@@ -1,0 +1,7 @@
+/minidb
+/build/
+*.db
+*.db-*
+*.o
+*.d
+.vscode/
