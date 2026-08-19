@@ -1,9 +1,9 @@
 CC = cc
-CFLAGS = -std=c11 -Wall -D_POSIX_C_SOURCE=200809L
+CFLAGS = -std=c11 -Wall -Iinclude -D_POSIX_C_SOURCE=200809L
 
-CORE = 
+CORE = src/table.c
 SOURCES = src/main.c $(CORE)
-TESTS = 
+TESTS = build/test_table
 
 .PHONY: all test clean
 all: minidb
