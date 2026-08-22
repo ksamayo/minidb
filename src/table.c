@@ -27,3 +27,15 @@ TableStatus table_select(const MemoryTable *table, FILE *output) {
     }
     return ferror(output) ? TABLE_IO : TABLE_OK;
 }
+
+TableStatus table_delete(MemoryTable *table, int64_t id) {
+    for (size_t row_index = 0; row_index < table->row_count; row_index++) {
+        if (table->rows[row_index].id == id) {
+            memmove(&table->rows[row_index], &table->rows[row_index + 1],
+                    (table->row_count - row_index - 1) * sizeof(Row));
+            table->row_count--;
+            return TABLE_OK;
+        }
+    }
+    return TABLE_NOT_FOUND;
+}

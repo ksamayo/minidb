@@ -1,7 +1,7 @@
 CC = cc
-CFLAGS = -std=c11 -Wall -Iinclude -D_POSIX_C_SOURCE=200809L
+CFLAGS = -std=c11 -Wall -g -Iinclude -D_POSIX_C_SOURCE=200809L
 
-CORE = src/table.c
+CORE = src/table.c src/storage.c
 SOURCES = src/main.c $(CORE)
 TESTS = build/test_table
 

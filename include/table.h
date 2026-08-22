@@ -31,4 +31,5 @@ typedef enum {
 void table_init(MemoryTable *table);
 TableStatus table_insert(MemoryTable *table, const Row *row);
 TableStatus table_select(const MemoryTable *table, FILE *output);
+TableStatus table_delete(MemoryTable *table, int64_t id);
 #endif

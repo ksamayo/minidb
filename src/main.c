@@ -1,5 +1,5 @@
+#include "storage.h"
 #include "table.h"
-
 #include <ctype.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -30,7 +30,11 @@ static int execute_command(MemoryTable *table, const char *command) {
         }
     } else if (!strcmp(command, "select")) {
         status = table_select(table, stdout);
-
+    } else if (sscanf(command, "delete %" SCNd64 " %c", &row.id, &trailing_character) == 1) {
+        status = table_delete(table, row.id);
+        if (status == TABLE_OK) {
+            puts("1 row deleted");
+        }
     } else {
         fputs("Error: expected insert <id> <name> <age> or select\n", stderr);
         return 1;
@@ -72,8 +76,21 @@ static int run_repl(MemoryTable *table) {
     return ferror(stdin) ? 1 : result;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s database.db\n", argv[0]);
+        return 1;
+    }
     MemoryTable table;
     table_init(&table);
-    return run_repl(&table);
+    if (storage_load(&table, argv[1]) != TABLE_OK) {
+        fputs("Error: cannot open database\n", stderr);
+        return 1;
+    }
+    int result = run_repl(&table);
+    if (storage_save(&table, argv[1]) != TABLE_OK) {
+        fputs("Error: cannot save database\n", stderr);
+        result = 1;
+    }
+    return result;
 }
