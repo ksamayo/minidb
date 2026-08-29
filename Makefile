@@ -1,20 +1,25 @@
 CC = cc
-CPPFLAGS = -Iinclude -D_POSIX_C_SOURCE=200809L
+CPPFLAGS = -Iinclude -D_POSIX_C_SOURCE=200809L -D_FILE_OFFSET_BITS=64
 CFLAGS = -std=c11 -Wall -Wextra -g
 
-CORE = src/table.c src/storage.c
+CORE = src/table.c src/storage.c src/pager.c
 SOURCES = src/main.c $(CORE)
-TESTS = build/test_table build/test_storage
+CORE_OBJECTS = $(CORE:src/%.c=build/%.o)
+OBJECTS = $(SOURCES:src/%.c=build/%.o)
+TESTS = build/test_table build/test_storage build/test_pager
 
 .PHONY: all test clean
 all: minidb
 
-minidb: $(SOURCES)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $^ -o $@
+minidb: $(OBJECTS)
+	$(CC) $(LDFLAGS) $^ -o $@
 
-build/test_%: tests/test_%.c $(CORE)
+build/%.o: src/%.c
 	@mkdir -p build
-	$(CC) $(CPPFLAGS) $(CFLAGS) $^ -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+build/test_%: tests/test_%.c $(CORE_OBJECTS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJECTS) $(LDFLAGS) -o $@
 
 test: minidb $(TESTS)
 	@for test in $(TESTS); do ./$$test || exit 1; done
