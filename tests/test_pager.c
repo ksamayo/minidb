@@ -65,8 +65,72 @@ static void test_file_header(void) {
     assert(unlink(database_path) == 0);
 }
 
+static void test_cache_growth(Pager *pager) {
+    uint32_t allocated_page_number;
+    uint8_t *page;
+    uint8_t *first_page;
+
+    assert(pager_get(pager, 1, &page) == DB_INVALID);
+    assert(pager_get(pager, UINT32_MAX, &page) == DB_INVALID);
+    assert(pager_allocate(pager, &allocated_page_number, &first_page) == DB_OK &&
+           allocated_page_number == 1);
+    strcpy((char *)first_page, "page contents");
+
+    for (unsigned page_number = 2; page_number <= 130; page_number++) {
+        assert(pager_allocate(pager, &allocated_page_number, &page) == DB_OK &&
+               allocated_page_number == page_number);
+        write_u32(page + 16, page_number);
+    }
+
+    assert(!strcmp((char *)first_page, "page contents"));
+}
+
+static void test_page_release(Pager *pager) {
+    assert(pager_release(pager, 0) == DB_INVALID);
+    assert(pager_release(pager, 999) == DB_INVALID);
+    assert(pager_release(pager, 42) == DB_OK);
+    assert(pager_release(pager, 42) == DB_INVALID);
+}
+
+static void test_persisted_pages_and_reuse(Pager *pager) {
+    uint8_t *page;
+    uint32_t allocated_page_number;
+
+    assert(pager->page_count == 131);
+    assert(pager_get(pager, 1, &page) == DB_OK);
+    assert(!strcmp((char *)page, "page contents"));
+    assert(pager_get(pager, 130, &page) == DB_OK);
+    assert(read_u32(page + 16) == 130);
+    assert(pager_allocate(pager, &allocated_page_number, &page) == DB_OK &&
+           allocated_page_number == 42);
+
+    for (size_t byte_index = 0; byte_index < PAGE_SIZE; byte_index++) {
+        assert(page[byte_index] == 0);
+    }
+}
+
+static void test_page_cache(void) {
+    char database_path[] = "/tmp/minidb-pager-XXXXXX";
+    int file_descriptor = mkstemp(database_path);
+    assert(file_descriptor >= 0 && close(file_descriptor) == 0 && unlink(database_path) == 0);
+
+    Pager pager;
+
+    assert(pager_open(&pager, database_path) == DB_OK);
+    test_cache_growth(&pager);
+    test_page_release(&pager);
+    assert(pager_close(&pager) == DB_OK);
+
+    assert(pager_open(&pager, database_path) == DB_OK);
+    test_persisted_pages_and_reuse(&pager);
+    assert(pager_close(&pager) == DB_OK);
+
+    assert(unlink(database_path) == 0);
+}
+
 int main(void) {
     test_file_header();
+    test_page_cache();
 
     puts("pager: OK");
     return 0;

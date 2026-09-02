@@ -123,6 +123,9 @@ static DbStatus grow_cache(Pager *pager, size_t needed) {
     }
     size_t capacity = pager->cache_capacity ? pager->cache_capacity : 16;
     while (capacity < needed) {
+        if (capacity > SIZE_MAX / 2 / sizeof(CachedPage)) {
+            return DB_NOMEM;
+        }
         capacity *= 2;
     }
     CachedPage *cache = realloc(pager->cache, capacity * sizeof(*cache));
@@ -169,6 +172,67 @@ void pager_dirty(Pager *pager, uint32_t number) {
     } else {
         pager->cache[number].dirty = true;
     }
+}
+
+DbStatus pager_allocate(Pager *pager, uint32_t *number, uint8_t **data) {
+    if (!pager || pager->fd < 0 || !number || !data) {
+        return DB_INVALID;
+    }
+    uint32_t head = read_u32(pager->header + HEADER_FREE);
+    if (head) {
+        DbStatus status = pager_get(pager, head, data);
+        if (status != DB_OK) {
+            return status;
+        }
+        uint32_t next = read_u32(*data + 4);
+        if ((*data)[0] != PAGE_FREE || next >= pager->page_count || next == head) {
+            return DB_CORRUPT;
+        }
+        write_u32(pager->header + HEADER_FREE, next);
+        *number = head;
+        memset(*data, 0, PAGE_SIZE);
+    } else {
+        if (pager->page_count == UINT32_MAX) {
+            return DB_FULL;
+        }
+        uint32_t id = pager->page_count;
+        DbStatus status = grow_cache(pager, (size_t)id + 1);
+        if (status != DB_OK) {
+            return status;
+        }
+        *data = calloc(1, PAGE_SIZE);
+        if (!*data) {
+            return DB_NOMEM;
+        }
+        pager->cache[id].data = *data;
+        *number = id;
+        pager->page_count++;
+        write_u32(pager->header + HEADER_PAGES, pager->page_count);
+    }
+    pager_dirty(pager, *number);
+    pager->header_dirty = true;
+    return DB_OK;
+}
+
+DbStatus pager_release(Pager *pager, uint32_t number) {
+    if (!number) {
+        return DB_INVALID;
+    }
+    uint8_t *page;
+    DbStatus status = pager_get(pager, number, &page);
+    if (status != DB_OK) {
+        return status;
+    }
+    if (page[0] == PAGE_FREE) {
+        return DB_INVALID;
+    }
+    memset(page, 0, PAGE_SIZE);
+    page[0] = PAGE_FREE;
+    write_u32(page + 4, read_u32(pager->header + HEADER_FREE));
+    write_u32(pager->header + HEADER_FREE, number);
+    pager_dirty(pager, number);
+    pager->header_dirty = true;
+    return DB_OK;
 }
 
 DbStatus pager_set_catalog(Pager *pager, uint32_t number) {
@@ -225,29 +289,4 @@ DbStatus pager_close(Pager *pager) {
     pager->cache = NULL;
     pager->cache_capacity = 0;
     return status;
-}
-
-DbStatus pager_allocate(Pager *pager, uint32_t *number, uint8_t **data) {
-    if (!pager || pager->fd < 0 || !number || !data) {
-        return DB_INVALID;
-    }
-    if (pager->page_count == UINT32_MAX) {
-        return DB_FULL;
-    }
-    uint32_t page_number = pager->page_count;
-    DbStatus status = grow_cache(pager, (size_t)page_number + 1);
-    if (status != DB_OK) {
-        return status;
-    }
-    *data = calloc(1, PAGE_SIZE);
-    if (!*data) {
-        return DB_NOMEM;
-    }
-    pager->cache[page_number].data = *data;
-    *number = page_number;
-    pager->page_count++;
-    write_u32(pager->header + HEADER_PAGES, pager->page_count);
-    pager_dirty(pager, page_number);
-    pager->header_dirty = true;
-    return DB_OK;
 }

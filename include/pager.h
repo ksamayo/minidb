@@ -86,6 +86,7 @@ DbStatus pager_sync(Pager *pager);
 DbStatus pager_close(Pager *pager);
 DbStatus pager_get(Pager *pager, uint32_t number, uint8_t **data);
 DbStatus pager_allocate(Pager *pager, uint32_t *number, uint8_t **data);
+DbStatus pager_release(Pager *pager, uint32_t number);
 void pager_dirty(Pager *pager, uint32_t number);
 DbStatus pager_set_catalog(Pager *pager, uint32_t number);
 
