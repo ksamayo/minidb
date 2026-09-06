@@ -1,6 +1,6 @@
 CC = cc
 CPPFLAGS = -Iinclude -D_POSIX_C_SOURCE=200809L -D_FILE_OFFSET_BITS=64
-CFLAGS = -std=c11 -Wall -Wextra -g
+CFLAGS = -std=c11 -Wall -Wextra -O2 -g
 
 CORE = src/table.c src/storage.c src/pager.c src/btree.c
 SOURCES = src/main.c $(CORE)

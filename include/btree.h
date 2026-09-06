@@ -5,6 +5,7 @@
 
 #define BTREE_HEADER_SIZE 16u
 #define BTREE_MAX_VALUE 2030u
+#define BTREE_INTERNAL_MAX ((PAGE_SIZE - BTREE_HEADER_SIZE - 4u) / 12u)
 
 typedef struct {
     Pager *pager;

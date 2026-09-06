@@ -28,7 +28,12 @@ static void test_insertions(BTree *tree, int record_count) {
     assert(btree_find(tree, record_count, value, sizeof(value), NULL) == DB_NOT_FOUND);
 
     uint8_t *root_page;
-    assert(pager_get(tree->pager, tree->root, &root_page) == DB_OK && root_page[0] == PAGE_LEAF);
+    uint8_t *child_page;
+    assert(pager_get(tree->pager, tree->root, &root_page) == DB_OK &&
+           root_page[0] == PAGE_INTERNAL);
+    assert(pager_get(tree->pager, read_u32(root_page + BTREE_HEADER_SIZE), &child_page) == DB_OK);
+    assert(child_page[0] == PAGE_INTERNAL);
+
 }
 
 static void verify_reopened_rows(BTree *tree, int record_count) {
@@ -53,15 +58,15 @@ static void test_tree_persistence(void) {
     Pager pager;
     BTree tree;
     assert(pager_open(&pager, database_path) == DB_OK);
-    assert(btree_create(&tree, &pager, 32) == DB_OK);
+    assert(btree_create(&tree, &pager, 512) == DB_OK);
 
-    const int record_count = 30;
+    const int record_count = 2400;
     test_insertions(&tree, record_count);
     assert(pager_set_catalog(&pager, tree.root) == DB_OK);
     assert(pager_close(&pager) == DB_OK);
 
     assert(pager_open(&pager, database_path) == DB_OK);
-    assert(btree_open(&tree, &pager, read_u32(pager.header + HEADER_CATALOG), 32) == DB_OK);
+    assert(btree_open(&tree, &pager, read_u32(pager.header + HEADER_CATALOG), 512) == DB_OK);
     verify_reopened_rows(&tree, record_count);
 
     assert(pager_close(&pager) == DB_OK);
