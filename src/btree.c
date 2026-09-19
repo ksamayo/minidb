@@ -1,5 +1,6 @@
 #include "btree.h"
 
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -286,6 +287,373 @@ DbStatus btree_find(BTree *tree, int64_t key, void *value, size_t capacity, uint
         *length = size;
     }
     return DB_OK;
+}
+
+DbStatus btree_update(BTree *tree, int64_t key, const void *value, uint16_t length) {
+    if (length > tree->value_size || (!value && length)) {
+        return DB_INVALID;
+    }
+    uint32_t number;
+    uint8_t *page;
+    DbStatus status = find_leaf(tree, key, &number, &page);
+    if (status != DB_OK) {
+        return status;
+    }
+    unsigned index = lower_bound(tree, page, key);
+    if (index == read_u16(page + 2) || read_i64(cell(tree, page, index)) != key) {
+        return DB_NOT_FOUND;
+    }
+    put_cell(tree, cell(tree, page, index), key, value, length);
+    pager_dirty(tree->pager, number);
+    return DB_OK;
+}
+
+static DbStatus minimum_key(BTree *tree, uint32_t number, int64_t *key) {
+    for (unsigned depth = 0; depth < 64; depth++) {
+        uint8_t *page;
+        DbStatus status = get_node(tree, number, &page);
+        if (status != DB_OK) {
+            return status;
+        }
+        if (page[0] == PAGE_LEAF) {
+            if (!read_u16(page + 2)) {
+                return DB_NOT_FOUND;
+            }
+            *key = read_i64(cell(tree, page, 0));
+            return DB_OK;
+        }
+        number = read_u32(page + BTREE_HEADER_SIZE);
+    }
+    return DB_CORRUPT;
+}
+
+static DbStatus balance_child(BTree *tree, Internal *parent, unsigned *index) {
+    unsigned at = *index;
+    uint8_t *child;
+    DbStatus status = get_node(tree, parent->children[at], &child);
+    if (status != DB_OK) {
+        return status;
+    }
+    bool leaf = child[0] == PAGE_LEAF;
+    unsigned count = read_u16(child + 2);
+    unsigned minimum = leaf ? (leaf_max(tree) + 1) / 2 : BTREE_INTERNAL_MAX / 2;
+    if (count >= minimum || !parent->count) {
+        return DB_OK;
+    }
+
+    uint8_t *left = NULL, *right = NULL;
+    if (at) {
+        status = get_node(tree, parent->children[at - 1], &left);
+        if (status != DB_OK) {
+            return status;
+        }
+    }
+    if (at < parent->count) {
+        status = get_node(tree, parent->children[at + 1], &right);
+        if (status != DB_OK) {
+            return status;
+        }
+    }
+    if ((left && left[0] != child[0]) || (right && right[0] != child[0])) {
+        return DB_CORRUPT;
+    }
+    if (left && read_u16(left + 2) > minimum) {
+        unsigned n = read_u16(left + 2);
+        if (leaf) {
+            memmove(cell(tree, child, 1), cell(tree, child, 0), count * cell_size(tree));
+            memcpy(cell(tree, child, 0), cell(tree, left, n - 1), cell_size(tree));
+            memset(cell(tree, left, n - 1), 0, cell_size(tree));
+            write_u16(left + 2, (uint16_t)(n - 1));
+            write_u16(child + 2, (uint16_t)(count + 1));
+            parent->keys[at - 1] = read_i64(cell(tree, child, 0));
+            pager_dirty(tree->pager, parent->children[at - 1]);
+            pager_dirty(tree->pager, parent->children[at]);
+        } else {
+            Internal a, b;
+            load_internal(left, &a);
+            load_internal(child, &b);
+            memmove(b.keys + 1, b.keys, b.count * sizeof(b.keys[0]));
+            memmove(b.children + 1, b.children, (b.count + 1) * sizeof(b.children[0]));
+            b.keys[0] = parent->keys[at - 1];
+            b.children[0] = a.children[a.count];
+            parent->keys[at - 1] = a.keys[a.count - 1];
+            a.count--;
+            b.count++;
+            save_internal(tree, parent->children[at - 1], left, &a);
+            save_internal(tree, parent->children[at], child, &b);
+        }
+        return DB_OK;
+    }
+    if (right && read_u16(right + 2) > minimum) {
+        unsigned n = read_u16(right + 2);
+        if (leaf) {
+            memcpy(cell(tree, child, count), cell(tree, right, 0), cell_size(tree));
+            memmove(cell(tree, right, 0), cell(tree, right, 1), (n - 1) * cell_size(tree));
+            memset(cell(tree, right, n - 1), 0, cell_size(tree));
+            write_u16(child + 2, (uint16_t)(count + 1));
+            write_u16(right + 2, (uint16_t)(n - 1));
+            parent->keys[at] = read_i64(cell(tree, right, 0));
+            pager_dirty(tree->pager, parent->children[at]);
+            pager_dirty(tree->pager, parent->children[at + 1]);
+        } else {
+            Internal a, b;
+            load_internal(child, &a);
+            load_internal(right, &b);
+            a.keys[a.count] = parent->keys[at];
+            a.children[a.count + 1] = b.children[0];
+            a.count++;
+            parent->keys[at] = b.keys[0];
+            memmove(b.keys, b.keys + 1, (b.count - 1) * sizeof(b.keys[0]));
+            memmove(b.children, b.children + 1, b.count * sizeof(b.children[0]));
+            b.count--;
+            save_internal(tree, parent->children[at], child, &a);
+            save_internal(tree, parent->children[at + 1], right, &b);
+        }
+        return DB_OK;
+    }
+
+    unsigned sep = at ? at - 1 : at;
+    if (at) {
+        right = child;
+    } else {
+        left = child;
+    }
+    unsigned a_count = read_u16(left + 2), b_count = read_u16(right + 2);
+    if (leaf) {
+        if (a_count + b_count > leaf_max(tree)) {
+            return DB_CORRUPT;
+        }
+        memcpy(cell(tree, left, a_count), cell(tree, right, 0), b_count * cell_size(tree));
+        write_u16(left + 2, (uint16_t)(a_count + b_count));
+        write_u32(left + 4, read_u32(right + 4));
+        pager_dirty(tree->pager, parent->children[sep]);
+    } else {
+        Internal a, b;
+        load_internal(left, &a);
+        load_internal(right, &b);
+        if (a.count + b.count + 1 > BTREE_INTERNAL_MAX) {
+            return DB_CORRUPT;
+        }
+        a.keys[a.count] = parent->keys[sep];
+        memcpy(a.keys + a.count + 1, b.keys, b.count * sizeof(b.keys[0]));
+        memcpy(a.children + a.count + 1, b.children, (b.count + 1) * sizeof(b.children[0]));
+        a.count += b.count + 1;
+        save_internal(tree, parent->children[sep], left, &a);
+    }
+    status = pager_release(tree->pager, parent->children[sep + 1]);
+    if (status != DB_OK) {
+        return status;
+    }
+    memmove(parent->keys + sep, parent->keys + sep + 1,
+            (parent->count - sep - 1) * sizeof(parent->keys[0]));
+    memmove(parent->children + sep + 1, parent->children + sep + 2,
+            (parent->count - sep - 1) * sizeof(parent->children[0]));
+    parent->count--;
+    *index = sep;
+    return DB_OK;
+}
+
+static DbStatus delete_node(BTree *tree, uint32_t number, int64_t key, unsigned depth) {
+    if (depth >= 64) {
+        return DB_CORRUPT;
+    }
+    uint8_t *page;
+    DbStatus status = get_node(tree, number, &page);
+    if (status != DB_OK) {
+        return status;
+    }
+    unsigned count = read_u16(page + 2);
+    if (page[0] == PAGE_LEAF) {
+        unsigned index = lower_bound(tree, page, key);
+        if (index == count || read_i64(cell(tree, page, index)) != key) {
+            return DB_NOT_FOUND;
+        }
+        memmove(cell(tree, page, index), cell(tree, page, index + 1),
+                (count - index - 1) * cell_size(tree));
+        memset(cell(tree, page, count - 1), 0, cell_size(tree));
+        write_u16(page + 2, (uint16_t)(count - 1));
+        pager_dirty(tree->pager, number);
+        return DB_OK;
+    }
+    Internal node;
+    load_internal(page, &node);
+    unsigned index = child_index(&node, key);
+    status = delete_node(tree, node.children[index], key, depth + 1);
+    if (status != DB_OK) {
+        return status;
+    }
+    if (index) {
+        status = minimum_key(tree, node.children[index], &node.keys[index - 1]);
+        if (status != DB_OK && status != DB_NOT_FOUND) {
+            return status;
+        }
+    }
+    status = balance_child(tree, &node, &index);
+    if (status != DB_OK) {
+        return status;
+    }
+    if (index) {
+        status = minimum_key(tree, node.children[index], &node.keys[index - 1]);
+        if (status != DB_OK) {
+            return status;
+        }
+    }
+    if (index < node.count) {
+        status = minimum_key(tree, node.children[index + 1], &node.keys[index]);
+        if (status != DB_OK) {
+            return status;
+        }
+    }
+    save_internal(tree, number, page, &node);
+    return DB_OK;
+}
+
+DbStatus btree_delete(BTree *tree, int64_t key) {
+    DbStatus status = delete_node(tree, tree->root, key, 0);
+    if (status != DB_OK) {
+        return status;
+    }
+    uint8_t *page;
+    status = get_node(tree, tree->root, &page);
+    if (status != DB_OK) {
+        return status;
+    }
+    if (page[0] == PAGE_INTERNAL && !read_u16(page + 2)) {
+        uint32_t old = tree->root;
+        tree->root = read_u32(page + BTREE_HEADER_SIZE);
+        return pager_release(tree->pager, old);
+    }
+    return DB_OK;
+}
+
+typedef struct {
+    bool present;
+    int64_t min, max;
+} KeyRange;
+
+typedef struct {
+    uint8_t *seen;
+    uint32_t next_leaf;
+    bool has_leaf;
+    BTreeStats stats;
+} Verification;
+
+static DbStatus verify_node(BTree *tree, uint32_t number, unsigned depth, Verification *check,
+                            KeyRange *range) {
+    if (depth >= 64 || !number || number >= tree->pager->page_count || check->seen[number]) {
+        return DB_CORRUPT;
+    }
+    check->seen[number] = 1;
+    check->stats.nodes++;
+    uint8_t *page;
+    DbStatus status = get_node(tree, number, &page);
+    if (status != DB_OK) {
+        return status;
+    }
+    unsigned count = read_u16(page + 2);
+    if (page[0] == PAGE_LEAF) {
+        if (depth && count < (leaf_max(tree) + 1) / 2) {
+            return DB_CORRUPT;
+        }
+        if (check->has_leaf && (check->next_leaf != number || check->stats.height != depth + 1)) {
+            return DB_CORRUPT;
+        }
+        check->has_leaf = true;
+        check->next_leaf = read_u32(page + 4);
+        check->stats.height = depth + 1;
+        check->stats.leaves++;
+        check->stats.records += count;
+        range->present = count != 0;
+        for (unsigned i = 0; i < count; i++) {
+            uint8_t *entry = cell(tree, page, i);
+            int64_t key = read_i64(entry);
+            if (read_u16(entry + 8) > tree->value_size || (i && key <= range->max)) {
+                return DB_CORRUPT;
+            }
+            if (!i) {
+                range->min = key;
+            }
+            range->max = key;
+        }
+        return DB_OK;
+    }
+    if ((!depth && !count) || (depth && count < BTREE_INTERNAL_MAX / 2)) {
+        return DB_CORRUPT;
+    }
+    Internal node;
+    load_internal(page, &node);
+    range->present = true;
+    for (unsigned i = 0; i <= count; i++) {
+        KeyRange child = {0};
+        status = verify_node(tree, node.children[i], depth + 1, check, &child);
+        if (status != DB_OK) {
+            return status;
+        }
+        if (!child.present || (i && (node.keys[i - 1] != child.min || range->max >= child.min))) {
+            return DB_CORRUPT;
+        }
+        if (!i) {
+            range->min = child.min;
+        }
+        range->max = child.max;
+    }
+    return DB_OK;
+}
+
+DbStatus btree_verify(BTree *tree, BTreeStats *stats) {
+    Verification check = {0};
+    check.seen = calloc(tree->pager->page_count, 1);
+    if (!check.seen) {
+        return DB_NOMEM;
+    }
+    KeyRange range = {0};
+    DbStatus status = verify_node(tree, tree->root, 0, &check, &range);
+    if (status == DB_OK && check.next_leaf) {
+        status = DB_CORRUPT;
+    }
+    if (status == DB_OK && stats) {
+        *stats = check.stats;
+    }
+    free(check.seen);
+    return status;
+}
+
+static DbStatus dump_node(BTree *tree, uint32_t number, unsigned depth, FILE *output) {
+    uint8_t *page;
+    DbStatus status = get_node(tree, number, &page);
+    if (status != DB_OK) {
+        return status;
+    }
+    unsigned count = read_u16(page + 2);
+    fprintf(output, "%*spage %u %s (%u keys)", (int)(depth * 2), "", number,
+            page[0] == PAGE_LEAF ? "leaf" : "internal", count);
+    if (page[0] == PAGE_LEAF) {
+        fprintf(output, " next=%u:", read_u32(page + 4));
+        for (unsigned i = 0; i < count; i++) {
+            fprintf(output, " %" PRId64, read_i64(cell(tree, page, i)));
+        }
+        fputc('\n', output);
+        return ferror(output) ? DB_IO : DB_OK;
+    }
+    Internal node;
+    load_internal(page, &node);
+    fputs(":", output);
+    for (unsigned i = 0; i < count; i++) {
+        fprintf(output, " %" PRId64, node.keys[i]);
+    }
+    fputc('\n', output);
+    for (unsigned i = 0; i <= count; i++) {
+        status = dump_node(tree, node.children[i], depth + 1, output);
+        if (status != DB_OK) {
+            return status;
+        }
+    }
+    return ferror(output) ? DB_IO : DB_OK;
+}
+
+DbStatus btree_dump(BTree *tree, FILE *output) {
+    DbStatus status = btree_verify(tree, NULL);
+    return status == DB_OK ? dump_node(tree, tree->root, 0, output) : status;
 }
 
 DbStatus btree_scan(BTree *tree, BTreeVisitor visitor, void *context) {

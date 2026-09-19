@@ -16,7 +16,9 @@ minidb: $(OBJECTS)
 
 build/%.o: src/%.c
 	@mkdir -p build
-	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -c $< -o $@
+
+-include $(OBJECTS:.o=.d)
 
 build/test_%: tests/test_%.c $(CORE_OBJECTS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJECTS) $(LDFLAGS) -o $@
