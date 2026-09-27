@@ -1,7 +1,7 @@
-#include "storage.h"
-#include "table.h"
+#include "db.h"
+#include "legacy.h"
+
 #include <ctype.h>
-#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,52 +11,101 @@ static char *trim(char *line) {
     while (isspace((unsigned char)*line)) {
         line++;
     }
-    size_t length = strlen(line);
-    while (length && isspace((unsigned char)line[length - 1])) {
-        line[--length] = '\0';
+    size_t len = strlen(line);
+    while (len && isspace((unsigned char)line[len - 1])) {
+        line[--len] = '\0';
     }
     return line;
 }
 
-static int execute_command(MemoryTable *table, const char *command) {
-    TableStatus status;
-    char trailing_character;
-    Row row = {0};
-    if (sscanf(command, "insert %" SCNd64 " %63s %" SCNd64 " %c", &row.id, row.name, &row.age,
-               &trailing_character) == 3) {
-        status = table_insert(table, &row);
-        if (status == TABLE_OK) {
-            puts("1 row inserted");
-        }
-    } else if (!strcmp(command, "select")) {
-        status = table_select(table, stdout);
-    } else if (sscanf(command, "delete %" SCNd64 " %c", &row.id, &trailing_character) == 1) {
-        status = table_delete(table, row.id);
-        if (status == TABLE_OK) {
-            puts("1 row deleted");
-        }
-    } else {
-        fputs("Error: expected insert <id> <name> <age> or select\n", stderr);
-        return 1;
-    }
-    if (status != TABLE_OK) {
-        fprintf(stderr, "Error: table operation failed (%d)\n", status);
-        return 1;
-    }
-    return 0;
+static void help(void) {
+    puts(".help            Show available commands\n"
+         ".tables          List tables\n"
+         ".schema [table]  Show column names and types\n"
+         ".btree [table]   Print tree pages and keys\n"
+         ".exit            Save and close the database");
 }
 
-static int run_repl(MemoryTable *table) {
-    char *line = NULL;
-    size_t line_capacity = 0;
+static DbStatus meta_command(Database *db, char *command) {
+    char *argument = strpbrk(command, " \t");
+    if (argument) {
+        *argument++ = '\0';
+        argument = trim(argument);
+        if (!*argument) {
+            argument = NULL;
+        }
+    }
+    if (!strcmp(command, ".help") && !argument) {
+        help();
+        return DB_OK;
+    }
+    if (!strcmp(command, ".tables") && !argument) {
+        for (size_t i = 0; i < db->table_count; i++) {
+            puts(db->tables[i].name);
+        }
+        return DB_OK;
+    }
+    bool schema = !strcmp(command, ".schema");
+    if (!schema && strcmp(command, ".btree")) {
+        return DB_INVALID;
+    }
+    if (argument) {
+        if (!record_valid_name(argument)) {
+            return DB_INVALID;
+        }
+        for (char *p = argument; *p; p++) {
+            *p = (char)tolower((unsigned char)*p);
+        }
+        if (!db_table(db, argument)) {
+            return DB_NOT_FOUND;
+        }
+    }
+    for (size_t i = 0; i < db->table_count; i++) {
+        Table *table = &db->tables[i];
+        if (argument && strcmp(argument, table->name)) {
+            continue;
+        }
+        if (!argument) {
+            printf("%s:\n", table->name);
+        }
+        if (schema) {
+            for (unsigned col = 0; col < table->schema.count; col++) {
+                printf("%s %s\n", table->schema.columns[col].name,
+                       table->schema.columns[col].type == TYPE_INT ? "INT" : "TEXT");
+            }
+        } else {
+            DbStatus status = btree_dump(&table->tree, stdout);
+            if (status != DB_OK) {
+                return status;
+            }
+        }
+    }
+    return ferror(stdout) ? DB_IO : DB_OK;
+}
+
+int main(int argc, char **argv) {
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s database.db\n", argv[0]);
+        return 1;
+    }
+    Database db;
+    DbStatus status = db_open(&db, argv[1]);
+    if (status != DB_OK) {
+        fprintf(stderr, "Error: %s\n", db_status_string(status));
+        return 1;
+    }
     int interactive = isatty(STDIN_FILENO);
-    int result = 0;
+    if (interactive) {
+        puts("MiniDB v0.1\nType .help for commands");
+    }
+    char *line = NULL;
+    size_t capacity = 0;
     for (;;) {
         if (interactive) {
             fputs("minidb> ", stdout);
             fflush(stdout);
         }
-        if (getline(&line, &line_capacity, stdin) < 0) {
+        if (getline(&line, &capacity, stdin) < 0) {
             break;
         }
         char *command = trim(line);
@@ -66,30 +115,27 @@ static int run_repl(MemoryTable *table) {
         if (!strcmp(command, ".exit")) {
             break;
         }
-        if (!strcmp(command, ".help")) {
-            puts("insert <id> <name> <age>\nselect\n.exit");
+        if (*command == '.' && strncmp(command, ".create ", 8)) {
+            status = meta_command(&db, command);
+            if (status != DB_OK) {
+                fprintf(stderr, "Error: %s (use .help)\n", db_status_string(status));
+            }
         } else {
-            result |= execute_command(table, command);
+            status = legacy_execute(&db, command);
+            if (status != DB_OK) {
+                fprintf(stderr, "Error: %s\n", db_status_string(status));
+            }
         }
     }
     free(line);
-    return ferror(stdin) ? 1 : result;
-}
-
-int main(int argc, char **argv) {
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s database.db\n", argv[0]);
-        return 1;
+    int result = 0;
+    if (ferror(stdin)) {
+        perror("stdin");
+        result = 1;
     }
-    MemoryTable table;
-    table_init(&table);
-    if (storage_load(&table, argv[1]) != TABLE_OK) {
-        fputs("Error: cannot open database\n", stderr);
-        return 1;
-    }
-    int result = run_repl(&table);
-    if (storage_save(&table, argv[1]) != TABLE_OK) {
-        fputs("Error: cannot save database\n", stderr);
+    status = db_close(&db);
+    if (status != DB_OK) {
+        fprintf(stderr, "Error: %s\n", db_status_string(status));
         result = 1;
     }
     return result;
