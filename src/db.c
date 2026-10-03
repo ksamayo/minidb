@@ -1,4 +1,5 @@
 #include "db.h"
+#include "parser.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -267,4 +268,50 @@ DbStatus db_scan(Table *table, DbVisitor visitor, void *context) {
     }
     ScanContext scan = {table, visitor, context};
     return btree_scan(&table->tree, scan_record, &scan);
+}
+
+typedef struct {
+    const Schema *schema;
+    FILE *output;
+} PrintContext;
+
+static DbStatus print_row(const Value *values, unsigned count, void *context) {
+    (void)count;
+    PrintContext *print = context;
+    return record_print(print->schema, values, print->output);
+}
+
+DbStatus db_execute(Database *db, const Statement *statement, FILE *output) {
+    DbStatus status;
+    if (statement->type == STMT_CREATE) {
+        status = db_create_table(db, statement->table, &statement->schema);
+        if (status == DB_OK) {
+            fputs("OK\n", output);
+        }
+        return status;
+    }
+    Table *table = db_table(db, statement->table);
+    if (!table) {
+        return DB_NOT_FOUND;
+    }
+    if (statement->type == STMT_INSERT) {
+        status = db_insert(table, statement->values, statement->value_count);
+        if (status == DB_OK) {
+            fputs("1 row inserted\n", output);
+        }
+        return status;
+    }
+    if (statement->type == STMT_SELECT) {
+        if (statement->has_where) {
+            Value values[MAX_COLUMNS];
+            status = db_get(table, statement->id, values);
+            if (status == DB_NOT_FOUND) {
+                return DB_OK;
+            }
+            return status == DB_OK ? record_print(&table->schema, values, output) : status;
+        }
+        PrintContext print = {&table->schema, output};
+        return db_scan(table, print_row, &print);
+    }
+    return DB_INVALID;
 }

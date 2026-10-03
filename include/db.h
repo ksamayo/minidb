@@ -32,5 +32,7 @@ DbStatus db_get(Table *table, int64_t id, Value *values);
 DbStatus db_update(Table *table, int64_t id, const char *column, const Value *value);
 DbStatus db_delete(Table *table, int64_t id);
 DbStatus db_scan(Table *table, DbVisitor visitor, void *context);
+struct Statement;
+DbStatus db_execute(Database *db, const struct Statement *statement, FILE *output);
 
 #endif

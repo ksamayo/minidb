@@ -2,11 +2,11 @@ CC = cc
 CPPFLAGS = -Iinclude -D_POSIX_C_SOURCE=200809L -D_FILE_OFFSET_BITS=64
 CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -O2 -g
 
-CORE = src/pager.c src/btree.c src/record.c src/db.c src/legacy.c
+CORE = src/pager.c src/btree.c src/record.c src/db.c src/parser.c
 SOURCES = src/main.c $(CORE)
 CORE_OBJECTS = $(CORE:src/%.c=build/%.o)
 OBJECTS = $(SOURCES:src/%.c=build/%.o)
-TESTS = $(addprefix build/test_,pager btree record db)
+TESTS = $(addprefix build/test_,pager btree record db parser)
 
 .PHONY: all test clean
 all: minidb
