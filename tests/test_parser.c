@@ -27,6 +27,20 @@ static void test_select_statement(Statement *statement, char *error_message,
     assert(statement->has_where && statement->id == INT64_MAX);
 }
 
+static void test_update_statement(Statement *statement, char *error_message,
+                                  size_t error_capacity) {
+    assert(parser_parse("UPDATE users SET name = 'Alice' WHERE id = 1;", statement, error_message,
+                        error_capacity) == DB_OK);
+    assert(statement->type == STMT_UPDATE && !strcmp(statement->column, "name"));
+}
+
+static void test_delete_statement(Statement *statement, char *error_message,
+                                  size_t error_capacity) {
+    assert(parser_parse("DELETE FROM users WHERE id = -1;", statement, error_message,
+                        error_capacity) == DB_OK);
+    assert(statement->type == STMT_DELETE && statement->id == -1);
+}
+
 static void test_valid_statements(void) {
     Statement statement;
     char error_message[160];
@@ -34,6 +48,8 @@ static void test_valid_statements(void) {
     test_create_statement(&statement, error_message, sizeof(error_message));
     test_insert_statement(&statement, error_message, sizeof(error_message));
     test_select_statement(&statement, error_message, sizeof(error_message));
+    test_update_statement(&statement, error_message, sizeof(error_message));
+    test_delete_statement(&statement, error_message, sizeof(error_message));
 }
 
 static void test_invalid_statements(void) {
@@ -58,6 +74,13 @@ static void test_invalid_statements(void) {
         "CREATE TABLE users (id FLOAT)",
         "SELECT * FROM users; SELECT * FROM users",
         "SELECT * FROM users #",
+        "UPDATE users SET age = 2",
+        "UPDATE users SET age = 2, name = 'x' WHERE id = 1",
+        "UPDATE users age = 2 WHERE id = 1",
+        "DELETE FROM users",
+        "DELETE users WHERE id = 1",
+        "DELETE FROM users WHERE name = 'Bob'",
+        "UPDATE users SET age = 2 WHERE id > 1",
     };
     for (size_t statement_index = 0;
          statement_index < sizeof(invalid_statements) / sizeof(invalid_statements[0]);

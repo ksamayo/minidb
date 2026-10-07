@@ -276,6 +276,27 @@ static void select_rows(Parser *parser, Statement *statement) {
     }
 }
 
+static void update_row(Parser *parser, Statement *statement) {
+    statement->type = STMT_UPDATE;
+    next(parser);
+    if (!name(parser, statement->table) || !keyword(parser, "set") ||
+        !name(parser, statement->column) || !expect(parser, TOK_EQUAL, "expected =") ||
+        !value(parser, &statement->values[0])) {
+        return;
+    }
+    statement->value_count = 1;
+    where(parser, statement);
+}
+
+static void delete_row(Parser *parser, Statement *statement) {
+    statement->type = STMT_DELETE;
+    next(parser);
+    if (!keyword(parser, "from") || !name(parser, statement->table)) {
+        return;
+    }
+    where(parser, statement);
+}
+
 DbStatus parser_parse(const char *sql, Statement *statement, char *error, size_t error_size) {
     if (!sql || !statement) {
         return DB_INVALID;
@@ -292,8 +313,12 @@ DbStatus parser_parse(const char *sql, Statement *statement, char *error, size_t
         insert(&parser, statement);
     } else if (word(&parser, "select")) {
         select_rows(&parser, statement);
+    } else if (word(&parser, "update")) {
+        update_row(&parser, statement);
+    } else if (word(&parser, "delete")) {
+        delete_row(&parser, statement);
     } else {
-        fail(&parser, "expected CREATE, INSERT or SELECT");
+        fail(&parser, "expected CREATE, INSERT, SELECT, UPDATE or DELETE");
     }
     if (!parser.failed && parser.token.type == TOK_SEMICOLON) {
         next(&parser);

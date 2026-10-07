@@ -313,5 +313,18 @@ DbStatus db_execute(Database *db, const Statement *statement, FILE *output) {
         PrintContext print = {&table->schema, output};
         return db_scan(table, print_row, &print);
     }
+    if (statement->type == STMT_UPDATE || statement->type == STMT_DELETE) {
+        if (statement->type == STMT_UPDATE) {
+            status = db_update(table, statement->id, statement->column, &statement->values[0]);
+        } else {
+            status = db_delete(table, statement->id);
+        }
+        if (status != DB_OK && status != DB_NOT_FOUND) {
+            return status;
+        }
+        fprintf(output, "%s %s\n", status == DB_OK ? "1 row" : "0 rows",
+                statement->type == STMT_UPDATE ? "updated" : "deleted");
+        return ferror(output) ? DB_IO : DB_OK;
+    }
     return DB_INVALID;
 }

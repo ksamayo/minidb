@@ -6,12 +6,15 @@
 typedef enum {
     STMT_CREATE,
     STMT_INSERT,
-    STMT_SELECT
+    STMT_SELECT,
+    STMT_UPDATE,
+    STMT_DELETE
 } StatementType;
 
 typedef struct Statement {
     StatementType type;
     char table[MAX_NAME + 1];
+    char column[MAX_NAME + 1];
     Schema schema;
     Value values[MAX_COLUMNS];
     unsigned value_count;
