@@ -23,6 +23,9 @@ build/%.o: src/%.c
 build/test_%: tests/test_%.c $(CORE_OBJECTS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJECTS) $(LDFLAGS) -o $@
 
+build/test_btree: tests/test_btree.c $(CORE_OBJECTS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJECTS) $(LDFLAGS) -Wl,--wrap=calloc -Wl,--wrap=malloc -o $@
+
 test: minidb $(TESTS)
 	@for test in $(TESTS); do ./$$test || exit 1; done
 

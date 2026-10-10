@@ -5,6 +5,35 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+static size_t calloc_budget = SIZE_MAX;
+static size_t malloc_budget = SIZE_MAX;
+void *__real_calloc(size_t count, size_t size);
+void *__real_malloc(size_t size);
+
+void *__wrap_malloc(size_t size) {
+    if (!malloc_budget) {
+        return NULL;
+    }
+
+    if (malloc_budget != SIZE_MAX) {
+        malloc_budget--;
+    }
+
+    return __real_malloc(size);
+}
+
+void *__wrap_calloc(size_t count, size_t size) {
+    if (!calloc_budget) {
+        return NULL;
+    }
+
+    if (calloc_budget != SIZE_MAX) {
+        calloc_budget--;
+    }
+
+    return __real_calloc(count, size);
+}
+
 static DbStatus verify_scanned_row(int64_t key, const uint8_t *value, uint16_t value_length,
                                    void *context) {
     int64_t *expected_key = context;
@@ -103,6 +132,66 @@ static void test_capacities(void) {
          capacity_index++) {
         test_value_capacity(value_capacities[capacity_index]);
     }
+}
+
+static void test_root_allocation_failure(BTree *tree, uint8_t *value) {
+
+    calloc_budget = 1;
+    assert(btree_insert(tree, 2, value, 8) == DB_NOMEM);
+    calloc_budget = SIZE_MAX;
+
+    assert(btree_verify(tree, NULL) == DB_OK);
+    assert(btree_find(tree, 0, value, BTREE_MAX_VALUE, NULL) == DB_OK);
+    assert(btree_find(tree, 1, value, BTREE_MAX_VALUE, NULL) == DB_OK);
+    assert(btree_find(tree, 2, value, BTREE_MAX_VALUE, NULL) == DB_NOT_FOUND);
+}
+
+static void test_root_split_retry(BTree *tree, const uint8_t *value) {
+    assert(btree_verify(tree, NULL) == DB_OK);
+    assert(btree_insert(tree, 2, value, 8) == DB_OK);
+    assert(btree_verify(tree, NULL) == DB_OK);
+    verify_page_ownership(tree);
+}
+
+static void test_sibling_allocation_failure(BTree *tree, uint8_t *value) {
+
+    malloc_budget = 1;
+    assert(btree_delete(tree, 0) == DB_NOMEM);
+    malloc_budget = SIZE_MAX;
+
+    assert(btree_verify(tree, NULL) == DB_OK);
+    assert(btree_find(tree, 0, value, BTREE_MAX_VALUE, NULL) == DB_OK);
+    assert(btree_delete(tree, 0) == DB_OK);
+    verify_page_ownership(tree);
+}
+
+static void test_allocation_failure(void) {
+    char database_path[] = "/tmp/minidb-oom-XXXXXX";
+    int file_descriptor = mkstemp(database_path);
+    assert(file_descriptor >= 0 && close(file_descriptor) == 0);
+
+    Pager pager;
+    BTree tree;
+    uint8_t value[BTREE_MAX_VALUE] = {0};
+    assert(pager_open(&pager, database_path) == DB_OK);
+    assert(btree_create(&tree, &pager, sizeof(value)) == DB_OK);
+    assert(btree_insert(&tree, 0, value, 8) == DB_OK);
+    assert(btree_insert(&tree, 1, value, 8) == DB_OK);
+    test_root_allocation_failure(&tree, value);
+
+    assert(pager_set_catalog(&pager, tree.root) == DB_OK);
+    assert(pager_close(&pager) == DB_OK);
+    assert(pager_open(&pager, database_path) == DB_OK);
+    assert(btree_open(&tree, &pager, read_u32(pager.header + HEADER_CATALOG), sizeof(value)) ==
+           DB_OK);
+    test_root_split_retry(&tree, value);
+
+    assert(pager_set_catalog(&pager, tree.root) == DB_OK);
+    assert(pager_close(&pager) == DB_OK && pager_open(&pager, database_path) == DB_OK);
+    assert(btree_open(&tree, &pager, read_u32(pager.header + HEADER_CATALOG), sizeof(value)) ==
+           DB_OK);
+    test_sibling_allocation_failure(&tree, value);
+    assert(pager_close(&pager) == DB_OK && unlink(database_path) == 0);
 }
 
 static void test_insertions(BTree *tree, int record_count) {
@@ -219,6 +308,7 @@ static void test_tree_persistence(void) {
 int main(void) {
     test_tree_persistence();
     test_capacities();
+    test_allocation_failure();
 
     puts("btree: OK");
     return 0;
