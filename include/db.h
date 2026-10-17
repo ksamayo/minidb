@@ -21,6 +21,7 @@ typedef DbStatus (*DbVisitor)(const Value *values, unsigned count, void *context
 
 DbStatus db_open(Database *db, const char *path);
 DbStatus db_close(Database *db);
+
 /* Durability requires sync or close; no journal. */
 DbStatus db_sync(Database *db);
 DbStatus db_create_table(Database *db, const char *name, const Schema *schema);

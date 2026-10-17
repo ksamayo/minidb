@@ -109,6 +109,17 @@ static void test_persisted_pages_and_reuse(Pager *pager) {
     }
 }
 
+static void test_unavailable_file_descriptor(Pager *pager) {
+    uint32_t allocated_page_number;
+    uint8_t *page;
+
+    assert(pager_allocate(pager, &allocated_page_number, &page) == DB_OK);
+    assert(close(pager->fd) == 0);
+    assert(pager_get(pager, 129, &page) == DB_IO);
+    assert(pager_sync(pager) == DB_IO);
+    assert(pager_close(pager) == DB_IO);
+}
+
 static void test_page_cache(void) {
     char database_path[] = "/tmp/minidb-pager-XXXXXX";
     int file_descriptor = mkstemp(database_path);
@@ -125,6 +136,8 @@ static void test_page_cache(void) {
     test_persisted_pages_and_reuse(&pager);
     assert(pager_close(&pager) == DB_OK);
 
+    assert(pager_open(&pager, database_path) == DB_OK);
+    test_unavailable_file_descriptor(&pager);
     assert(unlink(database_path) == 0);
 }
 

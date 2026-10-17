@@ -20,11 +20,11 @@ typedef enum {
 
 /* Disk integers are little-endian. */
 static inline uint16_t read_u16(const uint8_t *p) {
-    return (uint16_t)((uint16_t)p[0] | (uint16_t)p[1] << 8);
+    return (uint16_t)p[0] | (uint16_t)p[1] << 8;
 }
 
 static inline uint32_t read_u32(const uint8_t *p) {
-    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+    return (uint32_t)read_u16(p) | (uint32_t)read_u16(p + 2) << 16;
 }
 
 static inline uint64_t read_u64(const uint8_t *p) {
@@ -42,9 +42,8 @@ static inline void write_u16(uint8_t *p, uint16_t n) {
 }
 
 static inline void write_u32(uint8_t *p, uint32_t n) {
-    for (unsigned i = 0; i < 4; i++) {
-        p[i] = (uint8_t)(n >> (8 * i));
-    }
+    write_u16(p, (uint16_t)n);
+    write_u16(p + 2, (uint16_t)(n >> 16));
 }
 
 static inline void write_u64(uint8_t *p, uint64_t n) {
