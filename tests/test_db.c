@@ -244,6 +244,40 @@ static void verify_and_delete_rows(Database *database) {
     verify_scan_and_delete_remaining_rows(users_table);
 }
 
+static void create_additional_tables(Database *database) {
+    for (int table_index = 0; table_index < 16; table_index++) {
+        char table_name[MAX_NAME + 1];
+        snprintf(table_name, sizeof(table_name), "table%d", table_index);
+        assert(db_create_table(database, table_name, &db_table(database, "users")->schema) ==
+               DB_OK);
+    }
+}
+
+static void verify_additional_tables(Database *database) {
+    for (int table_index = 0; table_index < 16; table_index++) {
+        char table_name[MAX_NAME + 1];
+        snprintf(table_name, sizeof(table_name), "table%d", table_index);
+        Table *table = db_table(database, table_name);
+        assert(table && btree_verify(&table->tree, NULL) == DB_OK);
+    }
+}
+
+static void verify_catalog_growth(Database *database, const char *database_path) {
+    BTreeStats tree_statistics;
+
+    assert(btree_verify(&db_table(database, "users")->tree, &tree_statistics) == DB_OK);
+    assert(tree_statistics.records == 0 && tree_statistics.height == 1);
+    create_additional_tables(database);
+
+    assert(db_close(database) == DB_OK && db_open(database, database_path) == DB_OK);
+    assert(database->table_count == 18);
+    verify_additional_tables(database);
+
+    Value row_values[MAX_COLUMNS];
+    assert(db_get(db_table(database, "products"), 0, row_values) == DB_OK);
+    assert(!strcmp(row_values[1].as.text, "product"));
+}
+
 static void test_table_persistence(void) {
     char database_path[] = "/tmp/minidb-db-XXXXXX";
     int file_descriptor = mkstemp(database_path);
@@ -258,7 +292,9 @@ static void test_table_persistence(void) {
     verify_and_delete_rows(&database);
     assert(db_close(&database) == DB_OK);
 
-    assert(unlink(database_path) == 0);
+    assert(db_open(&database, database_path) == DB_OK);
+    verify_catalog_growth(&database, database_path);
+    assert(db_close(&database) == DB_OK && unlink(database_path) == 0);
 }
 
 int main(void) {
